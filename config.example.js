@@ -2,9 +2,9 @@
   "listen_port": 443,
   "mode": "tls",
   "services": {
-    "example.UserService": {
+    "YunService": {
       "host": "127.0.0.1",
-      "port": 50051
+      "port": 3443
     },
     "example.ProductService": {
       "host": "127.0.0.1", 

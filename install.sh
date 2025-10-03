@@ -144,18 +144,156 @@ install_service() {
     
     # 安装管理脚本到全局路径
     print_info "安装管理脚本..."
-    # 创建简单的管理脚本
+    # 创建交互式管理脚本
     cat > "${GOFP_COMMAND}" << 'EOF'
 #!/bin/bash
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
 SERVICE_NAME="grpc-forwarder"
-case "$1" in
-    start) systemctl start "${SERVICE_NAME}" ;;
-    stop) systemctl stop "${SERVICE_NAME}" ;;
-    restart) systemctl restart "${SERVICE_NAME}" ;;
-    status) systemctl status "${SERVICE_NAME}" ;;
-    logs) journalctl -u "${SERVICE_NAME}" -f ;;
-    *) echo "用法: gofp {start|stop|restart|status|logs}" ;;
-esac
+
+print_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+show_menu() {
+    clear
+    echo "=================================="
+    echo "    gRPC 反向代理服务管理"
+    echo "=================================="
+    echo ""
+    echo "1. 启动服务"
+    echo "2. 停止服务"
+    echo "3. 重启服务"
+    echo "4. 查看服务状态"
+    echo "5. 查看实时日志"
+    echo "6. 查看最近日志"
+    echo "7. 编辑配置文件"
+    echo "8. 重载配置"
+    echo "0. 退出"
+    echo ""
+    echo -n "请选择操作 [0-8]: "
+}
+
+handle_choice() {
+    case $1 in
+        1)
+            print_info "启动服务..."
+            systemctl start "${SERVICE_NAME}"
+            if systemctl is-active --quiet "${SERVICE_NAME}"; then
+                print_success "服务启动成功"
+            else
+                print_error "服务启动失败"
+            fi
+            ;;
+        2)
+            print_info "停止服务..."
+            systemctl stop "${SERVICE_NAME}"
+            if ! systemctl is-active --quiet "${SERVICE_NAME}"; then
+                print_success "服务已停止"
+            else
+                print_error "服务停止失败"
+            fi
+            ;;
+        3)
+            print_info "重启服务..."
+            systemctl restart "${SERVICE_NAME}"
+            if systemctl is-active --quiet "${SERVICE_NAME}"; then
+                print_success "服务重启成功"
+            else
+                print_error "服务重启失败"
+            fi
+            ;;
+        4)
+            print_info "服务状态:"
+            systemctl status "${SERVICE_NAME}" --no-pager -l
+            echo ""
+            print_info "端口监听状态:"
+            netstat -tlnp | grep ":443 " || netstat -tlnp | grep ":8080 " || print_warning "未检测到443或8080端口监听"
+            ;;
+        5)
+            print_info "实时日志 (按 Ctrl+C 退出):"
+            journalctl -u "${SERVICE_NAME}" -f
+            ;;
+        6)
+            print_info "最近50条日志:"
+            journalctl -u "${SERVICE_NAME}" --no-pager -n 50
+            ;;
+        7)
+            print_info "配置文件位置: /etc/grpc-forwarder/"
+            ls -la /etc/grpc-forwarder/
+            echo ""
+            echo "请选择要编辑的配置文件:"
+            echo "1. config.example.js (TLS模式)"
+            echo "2. config.http.example.js (HTTP模式)"
+            echo -n "选择 [1-2]: "
+            read config_choice
+            case $config_choice in
+                1) nano /etc/grpc-forwarder/config.example.js ;;
+                2) nano /etc/grpc-forwarder/config.http.example.js ;;
+                *) print_error "无效选择" ;;
+            esac
+            ;;
+        8)
+            print_info "重载配置 (重启服务)..."
+            systemctl restart "${SERVICE_NAME}"
+            if systemctl is-active --quiet "${SERVICE_NAME}"; then
+                print_success "配置重载成功"
+            else
+                print_error "配置重载失败"
+            fi
+            ;;
+        0)
+            print_info "退出管理程序"
+            exit 0
+            ;;
+        *)
+            print_error "无效选择，请输入 0-8"
+            ;;
+    esac
+}
+
+# 如果有参数，直接执行对应操作
+if [ $# -gt 0 ]; then
+    case "$1" in
+        start) handle_choice 1 ;;
+        stop) handle_choice 2 ;;
+        restart) handle_choice 3 ;;
+        status) handle_choice 4 ;;
+        logs) handle_choice 5 ;;
+        recent) handle_choice 6 ;;
+        *) echo "用法: gofp {start|stop|restart|status|logs|recent}" ;;
+    esac
+    exit 0
+fi
+
+# 交互式菜单
+while true; do
+    show_menu
+    read choice
+    echo ""
+    handle_choice $choice
+    echo ""
+    echo "按回车键继续..."
+    read
+done
 EOF
     chmod +x "${GOFP_COMMAND}"
     print_success "已安装 gofp 管理命令到 ${GOFP_COMMAND}"
@@ -179,6 +317,8 @@ import http.server
 import socketserver
 import os
 import sys
+import threading
+import time
 
 PORT = 8888
 CONFIG_DIR = "/etc/grpc-forwarder"
@@ -189,7 +329,8 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
             config_file = os.path.join(CONFIG_DIR, "config.example.js")
             if os.path.exists(config_file):
                 self.send_response(200)
-                self.send_header('Content-type', 'application/json')
+                self.send_header('Content-type', 'application/javascript')
+                self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 with open(config_file, 'rb') as f:
                     self.wfile.write(f.read())
@@ -197,22 +338,69 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(404, "Config file not found")
         else:
             self.send_error(404, "Not found")
+    
+    def log_message(self, format, *args):
+        # 重定向日志到文件
+        with open("/var/log/grpc-forwarder/config-server.log", "a") as f:
+            f.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format % args))
 
-os.chdir(CONFIG_DIR)
-with socketserver.TCPServer(("", PORT), ConfigHandler) as httpd:
-    print(f"Config server running on port {PORT}")
-    httpd.serve_forever()
+def start_server():
+    os.chdir(CONFIG_DIR)
+    with socketserver.TCPServer(("0.0.0.0", PORT), ConfigHandler) as httpd:
+        print(f"Config server running on port {PORT}")
+        httpd.serve_forever()
+
+if __name__ == "__main__":
+    start_server()
 EOF
         chmod +x "${INSTALL_DIR}/config-server.py"
         
-        # 启动配置服务器
-        nohup python3 "${INSTALL_DIR}/config-server.py" > "${LOG_DIR}/config-server.log" 2>&1 &
-        CONFIG_SERVER_PID=$!
-        echo $CONFIG_SERVER_PID > "${INSTALL_DIR}/config-server.pid"
+        # 创建配置服务器的systemd服务
+        cat > "/etc/systemd/system/grpc-config-server.service" << EOF
+[Unit]
+Description=gRPC Forwarder Config Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=/usr/bin/python3 ${INSTALL_DIR}/config-server.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
         
-        sleep 2
-        CONFIG_URL="http://127.0.0.1:8888/config.js"
-        print_success "本地配置服务器已启动，配置URL: ${CONFIG_URL}"
+        # 启动配置服务器
+        systemctl daemon-reload
+        systemctl enable grpc-config-server
+        systemctl start grpc-config-server
+        
+        # 等待服务启动
+        sleep 3
+        
+        # 检查配置服务器是否启动成功
+        if systemctl is-active --quiet grpc-config-server; then
+            CONFIG_URL="http://127.0.0.1:8888/config.js"
+            print_success "本地配置服务器已启动，配置URL: ${CONFIG_URL}"
+            
+            # 测试配置URL是否可访问
+            if command -v curl &> /dev/null; then
+                if curl -s "${CONFIG_URL}" > /dev/null; then
+                    print_success "配置URL测试成功"
+                else
+                    print_warning "配置URL测试失败，将使用文件路径"
+                    CONFIG_URL="file://${CONFIG_DIR}/config.example.js"
+                fi
+            fi
+        else
+            print_warning "配置服务器启动失败，使用文件路径"
+            CONFIG_URL="file://${CONFIG_DIR}/config.example.js"
+        fi
     fi
     
     # 创建systemd服务文件
@@ -357,18 +545,14 @@ uninstall_service() {
     systemctl stop "${SERVICE_NAME}" 2>/dev/null
     systemctl disable "${SERVICE_NAME}" 2>/dev/null
     
+    # 停止并删除配置服务器
+    print_info "停止配置服务器..."
+    systemctl stop grpc-config-server 2>/dev/null
+    systemctl disable grpc-config-server 2>/dev/null
+    rm -f "/etc/systemd/system/grpc-config-server.service"
+    
     print_info "删除服务文件..."
     rm -f "${SYSTEMD_SERVICE}"
-    
-    # 停止配置服务器
-    if [ -f "${INSTALL_DIR}/config-server.pid" ]; then
-        CONFIG_SERVER_PID=$(cat "${INSTALL_DIR}/config-server.pid")
-        if kill -0 "$CONFIG_SERVER_PID" 2>/dev/null; then
-            kill "$CONFIG_SERVER_PID"
-            print_info "已停止配置服务器"
-        fi
-        rm -f "${INSTALL_DIR}/config-server.pid"
-    fi
     
     # 删除管理命令
     if [ -f "${GOFP_COMMAND}" ]; then

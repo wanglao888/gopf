@@ -651,6 +651,101 @@ restart_service() {
     fi
 }
 
+# 卸载服务
+uninstall_service() {
+    print_warning "即将卸载 gRPC 反向代理服务..."
+    print_warning "这将删除所有相关文件和配置！"
+    echo ""
+    read -p "确认卸载? 输入 'YES' 继续: " confirm
+    
+    if [[ "$confirm" != "YES" ]]; then
+        print_info "卸载已取消"
+        return 0
+    fi
+    
+    print_info "开始卸载..."
+    
+    # 停止并禁用服务
+    print_info "停止服务..."
+    systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
+    systemctl stop "grpc-config-server" 2>/dev/null || true
+    
+    print_info "禁用服务..."
+    systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
+    systemctl disable "grpc-config-server" 2>/dev/null || true
+    
+    # 删除systemd服务文件
+    print_info "删除systemd服务文件..."
+    rm -f "${SYSTEMD_SERVICE}"
+    rm -f "/etc/systemd/system/grpc-config-server.service"
+    
+    # 重载systemd
+    systemctl daemon-reload
+    
+    # 删除安装目录
+    print_info "删除安装目录..."
+    rm -rf "${INSTALL_DIR}"
+    
+    # 删除配置目录
+    print_info "删除配置目录..."
+    rm -rf "${CONFIG_DIR}"
+    
+    # 删除日志目录
+    print_info "删除日志目录..."
+    rm -rf "${LOG_DIR}"
+    
+    # 删除管理命令
+    print_info "删除管理命令..."
+    rm -f "${GOFP_COMMAND}"
+    
+    print_success "gRPC 反向代理服务已完全卸载!"
+    print_info "所有相关文件和配置已删除"
+}
+
+# 重装服务
+reinstall_service() {
+    print_info "开始重装 gRPC 反向代理服务..."
+    print_warning "这将先卸载现有服务，然后重新安装"
+    echo ""
+    read -p "确认重装? 输入 'YES' 继续: " confirm
+    
+    if [[ "$confirm" != "YES" ]]; then
+        print_info "重装已取消"
+        return 0
+    fi
+    
+    # 先卸载
+    print_info "第一步: 卸载现有服务..."
+    
+    # 停止并禁用服务
+    systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
+    systemctl stop "grpc-config-server" 2>/dev/null || true
+    systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
+    systemctl disable "grpc-config-server" 2>/dev/null || true
+    
+    # 删除systemd服务文件
+    rm -f "${SYSTEMD_SERVICE}"
+    rm -f "/etc/systemd/system/grpc-config-server.service"
+    systemctl daemon-reload
+    
+    # 删除安装目录和管理命令
+    rm -rf "${INSTALL_DIR}"
+    rm -f "${GOFP_COMMAND}"
+    
+    # 保留配置和日志目录，但清理旧文件
+    print_info "清理旧配置文件..."
+    rm -f "${CONFIG_DIR}/config-server.py"
+    
+    print_success "卸载完成"
+    
+    # 重新安装
+    print_info "第二步: 重新安装服务..."
+    sleep 2
+    install_service
+    
+    print_success "重装完成!"
+}
+
 # 查看服务状态
 show_status() {
     print_info "gRPC 反向代理服务状态:"
@@ -740,30 +835,121 @@ show_help() {
     echo ""
     echo "命令:"
     echo "  install     安装服务"
+    echo "  uninstall   卸载服务 (可选: --force 强制卸载)"
+    echo "  reinstall   重装服务"
     echo "  start       启动服务"
     echo "  stop        停止服务"
     echo "  restart     重启服务"
     echo "  status      查看服务状态"
     echo "  logs        实时查看日志"
     echo "  recent      查看最近日志"
-    echo "  uninstall   卸载服务 (可选: --force 强制卸载)"
     echo "  help        显示帮助信息"
     echo ""
     echo "示例:"
     echo "  bash install    # 安装服务"
+    echo "  bash uninstall  # 卸载服务"
+    echo "  bash reinstall  # 重装服务"
     echo "  bash start      # 启动服务"
     echo "  bash status     # 查看状态"
     echo "  bash logs       # 查看日志"
     echo "  bash uninstall --force  # 强制卸载服务"
 }
 
+# 显示交互式菜单
+show_interactive_menu() {
+    while true; do
+        clear
+        echo "=================================="
+        echo "    gRPC 反向代理服务管理"
+        echo "=================================="
+        echo ""
+        echo "1. 安装服务"
+        echo "2. 启动服务"
+        echo "3. 停止服务"
+        echo "4. 重启服务"
+        echo "5. 查看服务状态"
+        echo "6. 查看实时日志"
+        echo "7. 查看最近日志"
+        echo "8. 卸载服务"
+        echo "9. 重装服务"
+        echo "0. 退出"
+        echo ""
+        echo -n "请选择操作 [0-9]: "
+        
+        read choice
+        echo ""
+        
+        case $choice in
+            1)
+                check_root
+                check_system
+                install_service
+                ;;
+            2)
+                check_root
+                start_service
+                ;;
+            3)
+                check_root
+                stop_service
+                ;;
+            4)
+                check_root
+                restart_service
+                ;;
+            5)
+                show_status
+                ;;
+            6)
+                show_logs
+                ;;
+            7)
+                show_recent_logs
+                ;;
+            8)
+                check_root
+                uninstall_service
+                ;;
+            9)
+                check_root
+                reinstall_service
+                ;;
+            0)
+                print_info "退出管理程序"
+                exit 0
+                ;;
+            *)
+                print_error "无效选择，请输入 0-9"
+                ;;
+        esac
+        
+        echo ""
+        echo "按回车键继续..."
+        read
+    done
+}
+
 # 主函数
 main() {
+    # 如果没有参数，显示交互式菜单
+    if [ $# -eq 0 ]; then
+        show_interactive_menu
+        return
+    fi
+    
     case "$1" in
         install)
             check_root
             check_system
             install_service
+            ;;
+        uninstall)
+            check_root
+            uninstall_service "$@"
+            ;;
+        reinstall)
+            check_root
+            reinstall_service
             ;;
         start)
             check_root
@@ -785,10 +971,6 @@ main() {
             ;;
         recent)
             show_recent_logs
-            ;;
-        uninstall)
-            check_root
-            uninstall_service "$@"
             ;;
         help|--help|-h)
             show_help

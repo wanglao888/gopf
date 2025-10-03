@@ -89,41 +89,35 @@ install_go() {
 install_service() {
     print_info "开始安装 gRPC 反向代理服务..."
     
-    # 检查是否需要下载源码并编译
+    # 检查是否需要下载可执行文件
     if [[ ! -f "./${BINARY_NAME}" ]]; then
-        print_info "未找到可执行文件，开始下载源码并编译..."
+        print_info "未找到可执行文件，开始下载预编译版本..."
         
-        # 检查并安装Go环境
-        if ! command -v go &> /dev/null; then
-            print_info "安装Go环境..."
-            install_go
-        fi
-        
-        # 下载源码
-        print_info "下载源码..."
-        if command -v git &> /dev/null; then
-            git clone https://github.com/wanglao888/gopf.git /tmp/grpc-forwarder
-        else
-            print_info "安装git..."
-            if command -v apt-get &> /dev/null; then
-                apt-get update && apt-get install -y git
-            elif command -v yum &> /dev/null; then
-                yum install -y git
-            fi
-            git clone https://github.com/wanglao888/gopf.git /tmp/grpc-forwarder
-        fi
-        
-        # 编译程序
-        print_info "编译程序..."
-        cd /tmp/grpc-forwarder
-        go mod tidy
-        go build -o gofp main.go
-        
-        # 复制到当前目录
-        cp gofp /tmp/
-        cp config.example.js /tmp/
-        cp config.http.example.js /tmp/
+        # 下载预编译的可执行文件
+        print_info "下载 grpc-forwarder 可执行文件..."
         cd /tmp
+        if command -v wget &> /dev/null; then
+            wget -O grpc-forwarder "https://raw.githubusercontent.com/wanglao888/gopf/refs/heads/main/grpc-forwarder"
+        elif command -v curl &> /dev/null; then
+            curl -L -o grpc-forwarder "https://raw.githubusercontent.com/wanglao888/gopf/refs/heads/main/grpc-forwarder"
+        else
+            print_error "需要 wget 或 curl 来下载文件"
+            exit 1
+        fi
+        
+        # 重命名为 gofp
+        mv grpc-forwarder gofp
+        chmod +x gofp
+        
+        # 下载配置文件示例
+        print_info "下载配置文件示例..."
+        if command -v wget &> /dev/null; then
+            wget -O config.example.js "https://raw.githubusercontent.com/wanglao888/gopf/refs/heads/main/config.example.js"
+        else
+            curl -L -o config.example.js "https://raw.githubusercontent.com/wanglao888/gopf/refs/heads/main/config.example.js"
+        fi
+        
+        print_success "文件下载完成"
     fi
     
     # 创建目录

@@ -21,7 +21,7 @@ LOG_DIR="/var/log/grpc-forwarder"
 SERVICE_FILE="/etc/systemd/system/grpc-forwarder.service"
 GOFP_COMMAND="/usr/local/bin/gofp"
 SYSTEMD_SERVICE="/etc/systemd/system/${SERVICE_NAME}.service"
-BINARY_NAME="grpc-forwarder"
+BINARY_NAME="gofp"
 
 # 打印带颜色的消息
 print_info() {
@@ -58,20 +58,72 @@ check_system() {
 }
 
 # 安装服务
+# 安装Go环境
+install_go() {
+    print_info "检测系统架构..."
+    ARCH=$(uname -m)
+    case $ARCH in
+        x86_64) GO_ARCH="amd64" ;;
+        aarch64) GO_ARCH="arm64" ;;
+        armv7l) GO_ARCH="armv6l" ;;
+        *) print_error "不支持的系统架构: $ARCH"; exit 1 ;;
+    esac
+    
+    GO_VERSION="1.21.5"
+    GO_TAR="go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"
+    
+    print_info "下载 Go ${GO_VERSION}..."
+    cd /tmp
+    wget -q "https://golang.org/dl/${GO_TAR}"
+    
+    print_info "安装 Go..."
+    tar -C /usr/local -xzf "${GO_TAR}"
+    
+    # 设置环境变量
+    echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile
+    export PATH=$PATH:/usr/local/go/bin
+    
+    print_success "Go 安装完成"
+}
+
 install_service() {
     print_info "开始安装 gRPC 反向代理服务..."
     
-    # 检查当前目录是否有可执行文件
+    # 检查是否需要下载源码并编译
     if [[ ! -f "./${BINARY_NAME}" ]]; then
-        print_error "在当前目录未找到 ${BINARY_NAME} 可执行文件"
-        print_info "请确保在包含 ${BINARY_NAME} 文件的目录中运行此脚本"
-        exit 1
-    fi
-    
-    if [[ ! -f "./gofp" ]]; then
-        print_error "错误: 找不到 gofp 管理脚本"
-        print_info "请确保在包含 gofp 文件的目录中运行此脚本"
-        exit 1
+        print_info "未找到可执行文件，开始下载源码并编译..."
+        
+        # 检查并安装Go环境
+        if ! command -v go &> /dev/null; then
+            print_info "安装Go环境..."
+            install_go
+        fi
+        
+        # 下载源码
+        print_info "下载源码..."
+        if command -v git &> /dev/null; then
+            git clone https://github.com/wanglao888/gopf.git /tmp/grpc-forwarder
+        else
+            print_info "安装git..."
+            if command -v apt-get &> /dev/null; then
+                apt-get update && apt-get install -y git
+            elif command -v yum &> /dev/null; then
+                yum install -y git
+            fi
+            git clone https://github.com/wanglao888/gopf.git /tmp/grpc-forwarder
+        fi
+        
+        # 编译程序
+        print_info "编译程序..."
+        cd /tmp/grpc-forwarder
+        go mod tidy
+        go build -o gofp main.go
+        
+        # 复制到当前目录
+        cp gofp /tmp/
+        cp config.example.js /tmp/
+        cp config.http.example.js /tmp/
+        cd /tmp
     fi
     
     # 创建目录
@@ -98,7 +150,19 @@ install_service() {
     
     # 安装管理脚本到全局路径
     print_info "安装管理脚本..."
-    cp "./gofp" "${GOFP_COMMAND}"
+    # 创建简单的管理脚本
+    cat > "${GOFP_COMMAND}" << 'EOF'
+#!/bin/bash
+SERVICE_NAME="grpc-forwarder"
+case "$1" in
+    start) systemctl start "${SERVICE_NAME}" ;;
+    stop) systemctl stop "${SERVICE_NAME}" ;;
+    restart) systemctl restart "${SERVICE_NAME}" ;;
+    status) systemctl status "${SERVICE_NAME}" ;;
+    logs) journalctl -u "${SERVICE_NAME}" -f ;;
+    *) echo "用法: gofp {start|stop|restart|status|logs}" ;;
+esac
+EOF
     chmod +x "${GOFP_COMMAND}"
     print_success "已安装 gofp 管理命令到 ${GOFP_COMMAND}"
     

@@ -134,12 +134,7 @@ install_service() {
     # 复制配置文件示例
     if [[ -f "./config.example.js" ]]; then
         cp "./config.example.js" "${CONFIG_DIR}/"
-        print_info "TLS模式配置文件示例已复制到 ${CONFIG_DIR}/config.example.js"
-    fi
-    
-    if [[ -f "./config.http.example.js" ]]; then
-        cp "./config.http.example.js" "${CONFIG_DIR}/"
-        print_info "HTTP模式配置文件示例已复制到 ${CONFIG_DIR}/config.http.example.js"
+        print_info "配置文件示例已复制到 ${CONFIG_DIR}/config.example.js"
     fi
     
     # 安装管理脚本到全局路径
@@ -240,16 +235,8 @@ handle_choice() {
             print_info "配置文件位置: /etc/grpc-forwarder/"
             ls -la /etc/grpc-forwarder/
             echo ""
-            echo "请选择要编辑的配置文件:"
-            echo "1. config.example.js (TLS模式)"
-            echo "2. config.http.example.js (HTTP模式)"
-            echo -n "选择 [1-2]: "
-            read config_choice
-            case $config_choice in
-                1) nano /etc/grpc-forwarder/config.example.js ;;
-                2) nano /etc/grpc-forwarder/config.http.example.js ;;
-                *) print_error "无效选择" ;;
-            esac
+            echo "编辑配置文件 config.example.js"
+            nano /etc/grpc-forwarder/config.example.js
             ;;
         8)
             print_info "重载配置 (重启服务)..."
@@ -300,9 +287,8 @@ EOF
     
     # 提示用户配置
     print_warning "配置文件说明:"
-    print_info "  - TLS模式 (默认): ${CONFIG_DIR}/config.example.js"
-    print_info "  - HTTP模式: ${CONFIG_DIR}/config.http.example.js"
-    print_warning "请根据需要编辑相应的配置文件，或准备好远程配置文件URL"
+    print_info "  - 配置文件示例: ${CONFIG_DIR}/config.example.js"
+    print_warning "请根据需要编辑配置文件，或准备好远程配置文件URL"
     print_info "注意：程序只支持HTTP/HTTPS URL作为配置源，不支持本地文件路径"
     
     read -p "请输入配置文件URL (回车使用默认配置服务器): " CONFIG_URL

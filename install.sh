@@ -117,6 +117,32 @@ install_service() {
             curl -L -o config.example.js "https://raw.githubusercontent.com/wanglao888/gopf/refs/heads/main/config.example.js"
         fi
         
+        # 创建HTTP模式配置文件
+        cat > config.http.example.js << 'EOF'
+{
+  "listen_port": 8080,
+  "mode": "http",
+  "services": {
+    "example.UserService": {
+      "host": "127.0.0.1",
+      "port": 50051
+    },
+    "example.ProductService": {
+      "host": "127.0.0.1", 
+      "port": 50052
+    },
+    "greet.Greeter": {
+      "host": "127.0.0.1",
+      "port": 50053
+    }
+  },
+  "default_fallback": {
+    "host": "127.0.0.1",
+    "port": 50051
+  }
+}
+EOF
+        
         print_success "文件下载完成"
     fi
     
@@ -135,6 +161,11 @@ install_service() {
     if [[ -f "./config.example.js" ]]; then
         cp "./config.example.js" "${CONFIG_DIR}/"
         print_info "配置文件示例已复制到 ${CONFIG_DIR}/config.example.js"
+    fi
+    
+    if [[ -f "./config.http.example.js" ]]; then
+        cp "./config.http.example.js" "${CONFIG_DIR}/"
+        print_info "HTTP模式配置文件已复制到 ${CONFIG_DIR}/config.http.example.js"
     fi
     
     # 安装管理脚本到全局路径
@@ -212,6 +243,7 @@ handle_choice() {
             systemctl restart "${SERVICE_NAME}"
             if systemctl is-active --quiet "${SERVICE_NAME}"; then
                 print_success "服务重启成功"
+                print_info "服务重启后会自动拉取最新配置文件"
             else
                 print_error "服务重启失败"
             fi
@@ -235,14 +267,36 @@ handle_choice() {
             print_info "配置文件位置: /etc/grpc-forwarder/"
             ls -la /etc/grpc-forwarder/
             echo ""
-            echo "编辑配置文件 config.example.js"
-            nano /etc/grpc-forwarder/config.example.js
+            echo "选择要编辑的配置文件:"
+            echo "1) TLS模式配置文件 (config.example.js)"
+            echo "2) HTTP模式配置文件 (config.http.example.js)"
+            read -p "请选择 [1-2]: " config_choice
+            case $config_choice in
+                1)
+                    if [[ -f "/etc/grpc-forwarder/config.example.js" ]]; then
+                        nano /etc/grpc-forwarder/config.example.js
+                    else
+                        echo "配置文件不存在: /etc/grpc-forwarder/config.example.js"
+                    fi
+                    ;;
+                2)
+                    if [[ -f "/etc/grpc-forwarder/config.http.example.js" ]]; then
+                        nano /etc/grpc-forwarder/config.http.example.js
+                    else
+                        echo "配置文件不存在: /etc/grpc-forwarder/config.http.example.js"
+                    fi
+                    ;;
+                *)
+                    echo "无效选择"
+                    ;;
+            esac
             ;;
         8)
             print_info "重载配置 (重启服务)..."
             systemctl restart "${SERVICE_NAME}"
             if systemctl is-active --quiet "${SERVICE_NAME}"; then
                 print_success "配置重载成功"
+                print_info "服务已重启并拉取最新配置文件"
             else
                 print_error "配置重载失败"
             fi
@@ -287,15 +341,27 @@ EOF
     
     # 提示用户配置
     print_warning "配置文件说明:"
-    print_info "  - 配置文件示例: ${CONFIG_DIR}/config.example.js"
+    print_info "  - TLS模式配置文件示例: $CONFIG_DIR/config.example.js"
+    print_info "  - HTTP模式配置文件示例: $CONFIG_DIR/config.http.example.js"
     print_warning "请根据需要编辑配置文件，或准备好远程配置文件URL"
     print_info "注意：程序只支持HTTP/HTTPS URL作为配置源，不支持本地文件路径"
+    print_info "建议：如果没有TLS证书，请使用HTTP模式配置文件"
+    print_info "新功能：配置服务器会自动从GitHub拉取最新配置文件"
     
     read -p "请输入配置文件URL (回车使用默认配置服务器): " CONFIG_URL
     
     # 如果用户没有输入URL，启动一个简单的HTTP服务器来提供配置文件
     if [[ -z "$CONFIG_URL" ]]; then
         print_info "启动本地配置服务器..."
+        
+        # 检查是否有TLS证书，决定使用哪个配置文件
+        if [[ -f "/etc/V2bX/fullchain.cer" && -f "/etc/V2bX/cert.key" ]]; then
+            CONFIG_FILE="$CONFIG_DIR/config.example.js"
+            print_info "检测到TLS证书，使用TLS模式配置"
+        else
+            CONFIG_FILE="$CONFIG_DIR/config.http.example.js"
+            print_warning "未检测到TLS证书，使用HTTP模式配置"
+        fi
         # 创建一个简单的配置服务器脚本
         cat > "${INSTALL_DIR}/config-server.py" << 'EOF'
 #!/usr/bin/env python3
@@ -305,35 +371,125 @@ import os
 import sys
 import threading
 import time
+import urllib.request
+import json
+from datetime import datetime
 
 PORT = 8888
 CONFIG_DIR = "/etc/grpc-forwarder"
+REMOTE_CONFIG_URLS = {
+    "tls": "https://raw.githubusercontent.com/wanglao888/gopf/refs/heads/main/config.example.js",
+    "http": "https://raw.githubusercontent.com/wanglao888/gopf/refs/heads/main/config.http.example.js"
+}
+
+def log_message(message):
+    """记录日志消息"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_file = "/var/log/grpc-forwarder/config-server.log"
+    try:
+        with open(log_file, "a") as f:
+            f.write(f"[{timestamp}] {message}\n")
+    except:
+        pass
+    print(f"[{timestamp}] {message}")
+
+def fetch_remote_config(config_type="auto"):
+    """从远程URL获取最新配置文件"""
+    try:
+        # 自动检测使用哪种配置
+        if config_type == "auto":
+            if os.path.exists("/etc/V2bX/fullchain.cer") and os.path.exists("/etc/V2bX/cert.key"):
+                config_type = "tls"
+            else:
+                config_type = "http"
+        
+        remote_url = REMOTE_CONFIG_URLS.get(config_type)
+        if not remote_url:
+            log_message(f"Unknown config type: {config_type}")
+            return None
+            
+        log_message(f"Fetching latest config from: {remote_url}")
+        
+        # 下载远程配置文件
+        with urllib.request.urlopen(remote_url, timeout=10) as response:
+            if response.status == 200:
+                config_content = response.read().decode('utf-8')
+                
+                # 验证JSON格式
+                try:
+                    json.loads(config_content)
+                    log_message(f"Successfully fetched and validated {config_type} config")
+                    return config_content
+                except json.JSONDecodeError as e:
+                    log_message(f"Invalid JSON in remote config: {e}")
+                    return None
+            else:
+                log_message(f"Failed to fetch config, HTTP status: {response.status}")
+                return None
+                
+    except Exception as e:
+        log_message(f"Error fetching remote config: {e}")
+        return None
+
+def get_local_config():
+    """获取本地配置文件作为备用"""
+    try:
+        # 检查是否有TLS证书，决定使用哪个配置文件
+        if os.path.exists("/etc/V2bX/fullchain.cer") and os.path.exists("/etc/V2bX/cert.key"):
+            config_file = os.path.join(CONFIG_DIR, "config.example.js")
+        else:
+            config_file = os.path.join(CONFIG_DIR, "config.http.example.js")
+        
+        if os.path.exists(config_file):
+            with open(config_file, 'r') as f:
+                content = f.read()
+                log_message(f"Using local config file: {config_file}")
+                return content
+        else:
+            log_message(f"Local config file not found: {config_file}")
+            return None
+    except Exception as e:
+        log_message(f"Error reading local config: {e}")
+        return None
 
 class ConfigHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/config.js":
-            config_file = os.path.join(CONFIG_DIR, "config.example.js")
-            if os.path.exists(config_file):
+            # 首先尝试从远程获取最新配置
+            config_content = fetch_remote_config()
+            
+            # 如果远程获取失败，使用本地配置作为备用
+            if config_content is None:
+                log_message("Remote config fetch failed, falling back to local config")
+                config_content = get_local_config()
+            
+            if config_content:
                 self.send_response(200)
                 self.send_header('Content-type', 'application/javascript')
                 self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                self.send_header('Pragma', 'no-cache')
+                self.send_header('Expires', '0')
                 self.end_headers()
-                with open(config_file, 'rb') as f:
-                    self.wfile.write(f.read())
+                self.wfile.write(config_content.encode('utf-8'))
             else:
+                log_message("No config available (remote and local both failed)")
                 self.send_error(404, "Config file not found")
         else:
             self.send_error(404, "Not found")
     
     def log_message(self, format, *args):
         # 重定向日志到文件
-        with open("/var/log/grpc-forwarder/config-server.log", "a") as f:
-            f.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format % args))
+        message = format % args
+        log_message(f"HTTP: {self.address_string()} - {message}")
 
 def start_server():
-    os.chdir(CONFIG_DIR)
+    log_message("Starting config server...")
+    log_message(f"Remote config URLs: {REMOTE_CONFIG_URLS}")
+    
     with socketserver.TCPServer(("0.0.0.0", PORT), ConfigHandler) as httpd:
-        print(f"Config server running on port {PORT}")
+        log_message(f"Config server running on port {PORT}")
+        log_message("Server will fetch latest config from remote URL on each request")
         httpd.serve_forever()
 
 if __name__ == "__main__":
@@ -351,7 +507,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=/usr/bin/python3 ${INSTALL_DIR}/config-server.py
+ExecStart=/usr/bin/python3 ${INSTALL_DIR}/config-server.py ${CONFIG_FILE}
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -373,6 +529,7 @@ EOF
         if systemctl is-active --quiet grpc-config-server; then
             CONFIG_URL="http://127.0.0.1:8888/config.js"
             print_success "本地配置服务器已启动，配置URL: ${CONFIG_URL}"
+            print_info "配置服务器将自动从GitHub拉取最新配置文件"
             
             # 测试配置URL是否可访问
             if command -v curl &> /dev/null; then
@@ -391,6 +548,15 @@ EOF
     
     # 创建systemd服务文件
     print_info "创建systemd服务..."
+    
+    # 根据选择的配置文件决定服务启动参数
+    if [[ "$CONFIG_FILE" == *"config.http.example.js" ]]; then
+        SERVICE_CONFIG_URL="file://$CONFIG_FILE"
+        print_info "使用HTTP模式配置文件: $CONFIG_FILE"
+    else
+        SERVICE_CONFIG_URL="file://$CONFIG_FILE"
+        print_info "使用TLS模式配置文件: $CONFIG_FILE"
+    fi
     cat > "${SYSTEMD_SERVICE}" << EOF
 [Unit]
 Description=gRPC Reverse Proxy Service
@@ -401,7 +567,7 @@ Wants=network.target
 Type=simple
 User=root
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/${BINARY_NAME} ${CONFIG_URL}
+ExecStart=${INSTALL_DIR}/${BINARY_NAME} ${SERVICE_CONFIG_URL}
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -476,6 +642,7 @@ restart_service() {
     systemctl restart "${SERVICE_NAME}"
     if systemctl is-active --quiet "${SERVICE_NAME}"; then
         print_success "服务重启成功"
+        print_info "服务重启后会自动拉取最新配置文件"
         show_status
     else
         print_error "服务重启失败"

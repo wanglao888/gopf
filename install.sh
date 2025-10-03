@@ -376,7 +376,6 @@ import json
 from datetime import datetime
 
 PORT = 8888
-CONFIG_DIR = "/etc/grpc-forwarder"
 REMOTE_CONFIG_URLS = {
     "tls": "https://raw.githubusercontent.com/wanglao888/gopf/refs/heads/main/config.example.js",
     "http": "https://raw.githubusercontent.com/wanglao888/gopf/refs/heads/main/config.http.example.js"
@@ -431,37 +430,11 @@ def fetch_remote_config(config_type="auto"):
         log_message(f"Error fetching remote config: {e}")
         return None
 
-def get_local_config():
-    """获取本地配置文件作为备用"""
-    try:
-        # 检查是否有TLS证书，决定使用哪个配置文件
-        if os.path.exists("/etc/V2bX/fullchain.cer") and os.path.exists("/etc/V2bX/cert.key"):
-            config_file = os.path.join(CONFIG_DIR, "config.example.js")
-        else:
-            config_file = os.path.join(CONFIG_DIR, "config.http.example.js")
-        
-        if os.path.exists(config_file):
-            with open(config_file, 'r') as f:
-                content = f.read()
-                log_message(f"Using local config file: {config_file}")
-                return content
-        else:
-            log_message(f"Local config file not found: {config_file}")
-            return None
-    except Exception as e:
-        log_message(f"Error reading local config: {e}")
-        return None
-
 class ConfigHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/config.js":
-            # 首先尝试从远程获取最新配置
+            # 只从远程获取配置，不使用本地备用
             config_content = fetch_remote_config()
-            
-            # 如果远程获取失败，使用本地配置作为备用
-            if config_content is None:
-                log_message("Remote config fetch failed, falling back to local config")
-                config_content = get_local_config()
             
             if config_content:
                 self.send_response(200)
@@ -473,8 +446,8 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(config_content.encode('utf-8'))
             else:
-                log_message("No config available (remote and local both failed)")
-                self.send_error(404, "Config file not found")
+                log_message("Failed to fetch remote config")
+                self.send_error(503, "Remote config unavailable")
         else:
             self.send_error(404, "Not found")
     
@@ -486,6 +459,7 @@ class ConfigHandler(http.server.SimpleHTTPRequestHandler):
 def start_server():
     log_message("Starting config server...")
     log_message(f"Remote config URLs: {REMOTE_CONFIG_URLS}")
+    log_message("Only remote config will be used, no local fallback")
     
     with socketserver.TCPServer(("0.0.0.0", PORT), ConfigHandler) as httpd:
         log_message(f"Config server running on port {PORT}")
@@ -536,27 +510,23 @@ EOF
                 if curl -s "${CONFIG_URL}" > /dev/null; then
                     print_success "配置URL测试成功"
                 else
-                    print_warning "配置URL测试失败，将使用文件路径"
-                    CONFIG_URL="file://${CONFIG_DIR}/config.example.js"
+                    print_error "配置URL测试失败，请检查网络连接和远程配置"
+                    exit 1
                 fi
             fi
         else
-            print_warning "配置服务器启动失败，使用文件路径"
-            CONFIG_URL="file://${CONFIG_DIR}/config.example.js"
+            print_error "配置服务器启动失败，无法获取远程配置"
+            exit 1
         fi
     fi
     
     # 创建systemd服务文件
     print_info "创建systemd服务..."
     
-    # 根据选择的配置文件决定服务启动参数
-    if [[ "$CONFIG_FILE" == *"config.http.example.js" ]]; then
-        SERVICE_CONFIG_URL="file://$CONFIG_FILE"
-        print_info "使用HTTP模式配置文件: $CONFIG_FILE"
-    else
-        SERVICE_CONFIG_URL="file://$CONFIG_FILE"
-        print_info "使用TLS模式配置文件: $CONFIG_FILE"
-    fi
+    # 直接使用配置服务器的HTTP URL
+    SERVICE_CONFIG_URL="${CONFIG_URL}"
+    print_info "使用远程配置URL: $SERVICE_CONFIG_URL"
+    
     cat > "${SYSTEMD_SERVICE}" << EOF
 [Unit]
 Description=gRPC Reverse Proxy Service

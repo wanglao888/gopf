@@ -340,12 +340,17 @@ show_recent_logs() {
 
 # 卸载服务
 uninstall_service() {
-    print_warning "即将卸载 gRPC 反向代理服务"
-    read -p "确认卸载? (y/N): " confirm
-    
-    if [[ $confirm != [yY] ]]; then
-        print_info "取消卸载"
-        exit 0
+    # 检查是否有 --force 参数
+    if [[ "$2" == "--force" ]] || [[ "$FORCE_UNINSTALL" == "yes" ]]; then
+        print_warning "强制卸载 gRPC 反向代理服务"
+    else
+        print_warning "即将卸载 gRPC 反向代理服务"
+        read -p "确认卸载? (y/N): " confirm
+        
+        if [[ $confirm != [yY] ]]; then
+            print_info "取消卸载"
+            exit 0
+        fi
     fi
     
     print_info "停止并禁用服务..."
@@ -380,7 +385,7 @@ uninstall_service() {
     rm -rf "${LOG_DIR}"
     
     read -p "是否删除配置文件? (y/N): " del_config
-    if [[ $del_config == [yY] ]]; then
+    if [[ $del_config == [yY] ]] || [[ "$2" == "--force" ]] || [[ "$FORCE_UNINSTALL" == "yes" ]]; then
         rm -rf "${CONFIG_DIR}"
         print_info "配置文件已删除"
     else
@@ -404,14 +409,15 @@ show_help() {
     echo "  status      查看服务状态"
     echo "  logs        实时查看日志"
     echo "  recent      查看最近日志"
-    echo "  uninstall   卸载服务"
+    echo "  uninstall   卸载服务 (可选: --force 强制卸载)"
     echo "  help        显示帮助信息"
     echo ""
     echo "示例:"
-    echo "  $0 install    # 安装服务"
-    echo "  $0 start      # 启动服务"
-    echo "  $0 status     # 查看状态"
-    echo "  $0 logs       # 查看日志"
+    echo "  bash install    # 安装服务"
+    echo "  bash start      # 启动服务"
+    echo "  bash status     # 查看状态"
+    echo "  bash logs       # 查看日志"
+    echo "  bash uninstall --force  # 强制卸载服务"
 }
 
 # 主函数
@@ -445,7 +451,7 @@ main() {
             ;;
         uninstall)
             check_root
-            uninstall_service
+            uninstall_service "$@"
             ;;
         help|--help|-h)
             show_help

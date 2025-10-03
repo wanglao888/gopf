@@ -44,7 +44,7 @@ print_error() {
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         print_error "此脚本需要root权限运行"
-        print_info "请使用: sudo $0 $1"
+        print_info "请使用: $0 $1"
         exit 1
     fi
 }
@@ -165,8 +165,55 @@ EOF
     print_info "  - TLS模式 (默认): ${CONFIG_DIR}/config.example.js"
     print_info "  - HTTP模式: ${CONFIG_DIR}/config.http.example.js"
     print_warning "请根据需要编辑相应的配置文件，或准备好远程配置文件URL"
+    print_info "注意：程序只支持HTTP/HTTPS URL作为配置源，不支持本地文件路径"
     
-    read -p "请输入配置文件路径或URL (回车使用默认TLS配置): " CONFIG_URL
+    read -p "请输入配置文件URL (回车使用默认配置服务器): " CONFIG_URL
+    
+    # 如果用户没有输入URL，启动一个简单的HTTP服务器来提供配置文件
+    if [[ -z "$CONFIG_URL" ]]; then
+        print_info "启动本地配置服务器..."
+        # 创建一个简单的配置服务器脚本
+        cat > "${INSTALL_DIR}/config-server.py" << 'EOF'
+#!/usr/bin/env python3
+import http.server
+import socketserver
+import os
+import sys
+
+PORT = 8888
+CONFIG_DIR = "/etc/grpc-forwarder"
+
+class ConfigHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/config.js":
+            config_file = os.path.join(CONFIG_DIR, "config.example.js")
+            if os.path.exists(config_file):
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                with open(config_file, 'rb') as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_error(404, "Config file not found")
+        else:
+            self.send_error(404, "Not found")
+
+os.chdir(CONFIG_DIR)
+with socketserver.TCPServer(("", PORT), ConfigHandler) as httpd:
+    print(f"Config server running on port {PORT}")
+    httpd.serve_forever()
+EOF
+        chmod +x "${INSTALL_DIR}/config-server.py"
+        
+        # 启动配置服务器
+        nohup python3 "${INSTALL_DIR}/config-server.py" > "${LOG_DIR}/config-server.log" 2>&1 &
+        CONFIG_SERVER_PID=$!
+        echo $CONFIG_SERVER_PID > "${INSTALL_DIR}/config-server.pid"
+        
+        sleep 2
+        CONFIG_URL="http://127.0.0.1:8888/config.js"
+        print_success "本地配置服务器已启动，配置URL: ${CONFIG_URL}"
+    fi
     
     # 创建systemd服务文件
     print_info "创建systemd服务..."
@@ -180,7 +227,7 @@ Wants=network.target
 Type=simple
 User=root
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/${BINARY_NAME} ${CONFIG_URL:-${CONFIG_DIR}/config.example.js}
+ExecStart=${INSTALL_DIR}/${BINARY_NAME} ${CONFIG_URL}
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -308,6 +355,16 @@ uninstall_service() {
     print_info "删除服务文件..."
     rm -f "${SYSTEMD_SERVICE}"
     
+    # 停止配置服务器
+    if [ -f "${INSTALL_DIR}/config-server.pid" ]; then
+        CONFIG_SERVER_PID=$(cat "${INSTALL_DIR}/config-server.pid")
+        if kill -0 "$CONFIG_SERVER_PID" 2>/dev/null; then
+            kill "$CONFIG_SERVER_PID"
+            print_info "已停止配置服务器"
+        fi
+        rm -f "${INSTALL_DIR}/config-server.pid"
+    fi
+    
     # 删除管理命令
     if [ -f "${GOFP_COMMAND}" ]; then
         rm -f "${GOFP_COMMAND}"
@@ -351,10 +408,10 @@ show_help() {
     echo "  help        显示帮助信息"
     echo ""
     echo "示例:"
-    echo "  sudo $0 install    # 安装服务"
-    echo "  sudo $0 start      # 启动服务"
-    echo "  sudo $0 status     # 查看状态"
-    echo "  sudo $0 logs       # 查看日志"
+    echo "  $0 install    # 安装服务"
+    echo "  $0 start      # 启动服务"
+    echo "  $0 status     # 查看状态"
+    echo "  $0 logs       # 查看日志"
 }
 
 # 主函数

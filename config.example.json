@@ -1,0 +1,33 @@
+{
+    "listen_port": 3443,
+    "target_host": "127.0.0.1",
+    "target_port": 80,
+    "log_level": "info",
+    "log_file": "/var/log/trojan-grpc-forwarder/forwarder.log",
+    "max_connections": 1000,
+    "timeout": 30,
+    "buffer_size": 4096,
+    "enable_tls": false,
+    "tls_cert": "",
+    "tls_key": "",
+    "grpc_options": {
+        "max_receive_message_size": 4194304,
+        "max_send_message_size": 4194304,
+        "keepalive_time": 30,
+        "keepalive_timeout": 5,
+        "keepalive_enforcement_policy": {
+            "min_time": 5,
+            "permit_without_stream": true
+        }
+    },
+    "forwarding_rules": [
+        {
+            "name": "default",
+            "enabled": true,
+            "listen_port": 3443,
+            "target_host": "127.0.0.1",
+            "target_port": 80,
+            "protocol": "tcp"
+        }
+    ]
+}
